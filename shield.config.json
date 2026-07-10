@@ -1,0 +1,31 @@
+{
+  "detection": {
+    "warnThreshold": 40,
+    "quarantineThreshold": 70,
+    "correlationWindowSeconds": 30,
+    "autoKill": false,
+    "trustDiscount": 30,
+    "memoryScanEngine": "builtin",
+    "yaraRulesPath": "rules",
+    "kernelBlocking": false
+  },
+  "allowlist": {
+    "publishers": [ "Microsoft Windows", "Microsoft Corporation" ],
+    "thumbprints": [],
+    "allowSubjectMatch": true,
+    "requireValidChain": true,
+    "checkRevocation": false
+  },
+  "telemetry": {
+    "jsonlPath": "incidents.jsonl",
+    "auditPath": "audit.log",
+    "syslog": { "enabled": false, "host": "127.0.0.1", "port": 514, "protocol": "udp", "appName": "ProcessShield" },
+    "webhook": { "enabled": false, "url": "" }
+  },
+  "service": {
+    "serviceName": "ProcessShield",
+    "heartbeatPath": "C:\\ProgramData\\ProcessShield\\heartbeat",
+    "heartbeatIntervalSeconds": 5,
+    "watchdogStaleSeconds": 30
+  }
+}
