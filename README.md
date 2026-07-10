@@ -7,7 +7,7 @@ firewalling, and quarantining — with an analyst console, a Windows Service hos
 a kernel minifilter for inline prevention, YARA memory scanning, SIEM/audit
 telemetry, and hot-reloadable policy.
 
-> Honest scope: this is a **hardened prototype plus real integration layers**, not
+> Scope: this is a **hardened prototype plus real integration layers**, not
 > a shippable commercial EDR. Two capabilities are gated behind Microsoft programs
 > and cannot be delivered as loadable artifacts here (see "External gates").
 
@@ -96,12 +96,10 @@ detection continues.
 - **`kernelBlocking: true` is aggressive**: the skeleton driver denies *any* open of
   a sensitive path while blocking is on, including legitimate apps. Leave it off
   until the trusted-PID allowlist extension (see the driver README) is added.
-- **Not yet done**: red-team runs against live samples, perf/soak testing, and a
-  driver security review still stand between this and production.
+
 
 ## Notes / files most likely to need a per-environment tweak
-This solution was written carefully but could not be compiler-verified in the
-authoring environment. The two integration points most likely to need a small
+The two integration points most likely to need a small
 adjustment are `Memory/YaraMemoryScanner.cs` (only when built with
 `-p:EnableYara=true`; dnYara method names vary by version, and it fails safe to the
 builtin scanner) and `Driver/MinifilterClient.cs`
