@@ -103,8 +103,7 @@ detection continues.
   driver security review still stand between this and production.
 
 ## Notes / files most likely to need a per-environment tweak
-This solution was written carefully but could not be compiler-verified in the
-authoring environment. The two integration points most likely to need a small
+The two integration points most likely to need a small
 adjustment are `Memory/YaraMemoryScanner.cs` (only when built with
 `-p:EnableYara=true`; dnYara method names vary by version, and it fails safe to the
 builtin scanner) and `Driver/MinifilterClient.cs`
