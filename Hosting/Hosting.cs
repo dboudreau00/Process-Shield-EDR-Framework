@@ -42,12 +42,12 @@ public sealed class Composition : IDisposable
         Host = host;
     }
 
-    public static Composition Build(string configPath)
+    public static Composition Build(string configPath, IEventSink? extraSink = null)
     {
         var log = new Logger();
         var cfg = ConfigLoader.Load(configPath, m => log.Info("config: " + m));
 
-        var sink = BuildSink(cfg.Telemetry);
+        var sink = BuildSink(cfg.Telemetry, extraSink);
         log.SetSink(sink);
 
         var verifier = new AuthenticodeVerifier(cfg.Allowlist);
@@ -91,7 +91,7 @@ public sealed class Composition : IDisposable
         catch (Exception ex) { Log.Error("minifilter setup", ex); }
     }
 
-    private static CompositeSink BuildSink(TelemetryConfig t)
+    private static CompositeSink BuildSink(TelemetryConfig t, IEventSink? extra)
     {
         var sinks = new List<IEventSink>
         {
@@ -102,6 +102,8 @@ public sealed class Composition : IDisposable
             sinks.Add(new SyslogSink(t.Syslog.Host, t.Syslog.Port, t.Syslog.Protocol, t.Syslog.AppName));
         if (t.Webhook.Enabled && !string.IsNullOrWhiteSpace(t.Webhook.Url))
             sinks.Add(new WebhookSink(t.Webhook.Url));
+        if (extra is not null)
+            sinks.Add(extra);
         return new CompositeSink(sinks);
     }
 

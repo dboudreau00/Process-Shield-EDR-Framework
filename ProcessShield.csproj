@@ -40,6 +40,14 @@
     <EmbeddedResource Remove="tests/**/*" />
   </ItemGroup>
 
+  <!-- The WPF GUI is its own project under gui/; keep it out of the console build. -->
+  <ItemGroup>
+    <Compile Remove="gui/**/*.cs" />
+    <None Remove="gui/**/*" />
+    <EmbeddedResource Remove="gui/**/*" />
+    <Page Remove="gui/**/*" />
+  </ItemGroup>
+
   <!-- The C kernel driver under kernel/ is built separately with the WDK; it is not
        part of the C# compilation. Exclude it from item globs for a clean project. -->
   <ItemGroup>

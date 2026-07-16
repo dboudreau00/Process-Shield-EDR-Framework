@@ -67,6 +67,26 @@ opt-in (sections 7 and 9).
 
 ---
 
+## Desktop GUI (ProcessShield.Gui)
+
+Besides the console, the solution includes a **WPF desktop app** — a dark
+instrument-panel dashboard. It shows current posture, a live table of contained and
+flagged processes with one-click **Release / Suspend / End process**, a live event
+feed, and a Settings editor that writes `shield.config.json` (threshold and
+allowlist changes apply live).
+
+Build the solution (section 3), then run it either way:
+- **Visual Studio:** right-click **ProcessShield.Gui** in Solution Explorer ->
+  **Set as Startup Project**, then **Debug -> Start** (F5). It requests administrator
+  rights through its manifest, so a UAC prompt appears automatically.
+- **Or** run `ProcessShield.Gui.exe` from
+  `gui\ProcessShield.Gui\bin\x64\Release\net8.0-windows\`.
+
+It drives the same engine as the console — use whichever you prefer. The
+detection walkthrough below works with either front-end.
+
+---
+
 ## 4. Run the unit tests
 
 - In VS: **Test -> Run All Tests** (opens Test Explorer). All tests should pass.
@@ -266,6 +286,7 @@ take effect on restart.
 | `--install` says it needs a self-contained exe | You ran it from a framework-dependent build; publish self-contained first (section 8). |
 | YARA build errors | Only happens with `-p:EnableYara=true`; the default build doesn't reference dnYara. |
 | Nothing detects during the sim | Confirm the agent started ETW (not WMI) and that you ran the sim **after** the agent. |
+| GUI shows a red banner, a warning dialog, or won't start | It logs to `%LOCALAPPDATA%\ProcessShield\gui.log` — open that for the exact error. The banner usually means "not running as Administrator." |
 
 ---
 

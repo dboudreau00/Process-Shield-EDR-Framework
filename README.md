@@ -7,7 +7,7 @@ firewalling, and quarantining — with an analyst console, a Windows Service hos
 a kernel minifilter for inline prevention, YARA memory scanning, SIEM/audit
 telemetry, and hot-reloadable policy.
 
-> Scope: this is a **hardened prototype plus real integration layers**, not
+> Honest scope: this is a **hardened prototype plus real integration layers**, not
 > a shippable commercial EDR. Two capabilities are gated behind Microsoft programs
 > and cannot be delivered as loadable artifacts here (see "External gates").
 
@@ -31,6 +31,9 @@ telemetry, and hot-reloadable policy.
   minifilter that denies opens of sensitive paths, driven by policy from the agent.
 
 ## Build & run
+
+There are two front-ends: a **console** (`ProcessShield.exe`) and a **WPF desktop
+GUI** (`ProcessShield.Gui.exe`) with a live dashboard, event feed, and settings editor.
 
 **New to this? Follow [`GETTING_STARTED.md`](GETTING_STARTED.md)** for step-by-step
 Visual Studio instructions (build -> test -> run -> install -> beta), including a
@@ -96,10 +99,12 @@ detection continues.
 - **`kernelBlocking: true` is aggressive**: the skeleton driver denies *any* open of
   a sensitive path while blocking is on, including legitimate apps. Leave it off
   until the trusted-PID allowlist extension (see the driver README) is added.
-
+- **Not yet done**: red-team runs against live samples, perf/soak testing, and a
+  driver security review still stand between this and production.
 
 ## Notes / files most likely to need a per-environment tweak
-The two integration points most likely to need a small
+This solution was written carefully but could not be compiler-verified in the
+authoring environment. The two integration points most likely to need a small
 adjustment are `Memory/YaraMemoryScanner.cs` (only when built with
 `-p:EnableYara=true`; dnYara method names vary by version, and it fails safe to the
 builtin scanner) and `Driver/MinifilterClient.cs`

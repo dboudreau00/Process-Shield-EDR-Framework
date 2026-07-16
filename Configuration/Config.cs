@@ -118,6 +118,13 @@ public static class ConfigLoader
         catch { /* best effort */ }
     }
 
+    /// <summary>Persist a config to disk (used by the GUI settings editor). Throws on failure.</summary>
+    public static void Save(ShieldConfig config, string path)
+    {
+        config.ClampAndValidate();
+        File.WriteAllText(path, JsonSerializer.Serialize(config, Options));
+    }
+
     /// <summary>Debounced hot-reload watcher. Returns the watcher so the caller can dispose it.</summary>
     public static FileSystemWatcher? Watch(string path, Action<ShieldConfig> onReload, Action<string>? warn = null)
     {

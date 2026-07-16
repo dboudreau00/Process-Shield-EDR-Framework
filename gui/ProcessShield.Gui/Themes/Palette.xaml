@@ -1,0 +1,108 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+
+    <!-- ============================================================
+         DESIGN TOKENS
+         Chrome stays a quiet, desaturated blue-slate. Colour is spent
+         only on threat state (safe / watch / contained), so the eye
+         goes straight to signal. Accent (interactive) is a cool cyan,
+         deliberately distinct from the "safe" green so brand != state.
+         ============================================================ -->
+
+    <!-- Neutrals -->
+    <Color x:Key="Ink">#0E1621</Color>        <!-- app background -->
+    <Color x:Key="InkRaised">#121C28</Color>  <!-- header / nav rail -->
+    <Color x:Key="Panel">#16212E</Color>      <!-- cards / surfaces -->
+    <Color x:Key="PanelHover">#1C2A38</Color>
+    <Color x:Key="Line">#253341</Color>       <!-- hairline dividers / borders -->
+    <Color x:Key="LineSoft">#1E2A36</Color>
+    <Color x:Key="Paper">#DCE6F0</Color>      <!-- primary text -->
+    <Color x:Key="Mist">#8CA0B3</Color>       <!-- secondary text -->
+    <Color x:Key="Faint">#5E7186</Color>      <!-- muted / captions -->
+
+    <!-- Signal (state) colours -->
+    <Color x:Key="Safe">#4FB286</Color>       <!-- trusted / allowed -->
+    <Color x:Key="Watch">#E0A458</Color>      <!-- warn -->
+    <Color x:Key="Threat">#D66A6A</Color>     <!-- quarantine / contained -->
+    <Color x:Key="Info">#5B8FB9</Color>       <!-- actions / neutral events -->
+    <Color x:Key="Accent">#3FA9B8</Color>     <!-- brand / interactive -->
+    <Color x:Key="AccentDim">#2C7B87</Color>
+
+    <!-- Brushes -->
+    <SolidColorBrush x:Key="Brush.Ink"        Color="{StaticResource Ink}"/>
+    <SolidColorBrush x:Key="Brush.InkRaised"  Color="{StaticResource InkRaised}"/>
+    <SolidColorBrush x:Key="Brush.Panel"      Color="{StaticResource Panel}"/>
+    <SolidColorBrush x:Key="Brush.PanelHover" Color="{StaticResource PanelHover}"/>
+    <SolidColorBrush x:Key="Brush.Line"       Color="{StaticResource Line}"/>
+    <SolidColorBrush x:Key="Brush.LineSoft"   Color="{StaticResource LineSoft}"/>
+    <SolidColorBrush x:Key="Brush.Paper"      Color="{StaticResource Paper}"/>
+    <SolidColorBrush x:Key="Brush.Mist"       Color="{StaticResource Mist}"/>
+    <SolidColorBrush x:Key="Brush.Faint"      Color="{StaticResource Faint}"/>
+    <SolidColorBrush x:Key="Brush.Safe"       Color="{StaticResource Safe}"/>
+    <SolidColorBrush x:Key="Brush.Watch"      Color="{StaticResource Watch}"/>
+    <SolidColorBrush x:Key="Brush.Threat"     Color="{StaticResource Threat}"/>
+    <SolidColorBrush x:Key="Brush.Info"       Color="{StaticResource Info}"/>
+    <SolidColorBrush x:Key="Brush.Accent"     Color="{StaticResource Accent}"/>
+    <SolidColorBrush x:Key="Brush.AccentDim"  Color="{StaticResource AccentDim}"/>
+
+    <!-- Type: Segoe UI for chrome; a mono face for telemetry (PIDs, scores, counters). -->
+    <FontFamily x:Key="Font.Ui">Segoe UI</FontFamily>
+    <FontFamily x:Key="Font.Data">Cascadia Mono, Consolas, Courier New</FontFamily>
+
+    <sys:Double x:Key="Size.Display">22</sys:Double>
+    <sys:Double x:Key="Size.Title">15</sys:Double>
+    <sys:Double x:Key="Size.Body">13</sys:Double>
+    <sys:Double x:Key="Size.Label">11.5</sys:Double>
+    <sys:Double x:Key="Size.Data">13</sys:Double>
+
+    <!-- Text styles -->
+    <Style x:Key="Text.Display" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Ui}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.Display}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Paper}"/>
+        <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
+    </Style>
+
+    <Style x:Key="Text.Title" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Ui}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.Title}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Paper}"/>
+    </Style>
+
+    <Style x:Key="Text.Body" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Ui}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.Body}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Paper}"/>
+    </Style>
+
+    <!-- Eyebrow / label: letter-spaced, uppercase, muted -->
+    <Style x:Key="Text.Label" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Ui}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.Label}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Faint}"/>
+    </Style>
+
+    <Style x:Key="Text.Data" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource Font.Data}"/>
+        <Setter Property="FontSize" Value="{StaticResource Size.Data}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Paper}"/>
+    </Style>
+
+    <!-- Shared shapes -->
+    <CornerRadius x:Key="Radius.Card">10</CornerRadius>
+    <CornerRadius x:Key="Radius.Control">6</CornerRadius>
+
+    <!-- Card container -->
+    <Style x:Key="Card" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource Brush.Panel}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.Line}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{StaticResource Radius.Card}"/>
+        <Setter Property="Padding" Value="18"/>
+    </Style>
+
+</ResourceDictionary>

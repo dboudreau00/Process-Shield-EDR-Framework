@@ -1,0 +1,23 @@
+<Window x:Class="ProcessShield.Gui.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:v="clr-namespace:ProcessShield.Gui.Views"
+        Title="ProcessShield" Height="760" Width="1180"
+        MinHeight="560" MinWidth="960"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource Brush.Ink}"
+        FontFamily="{StaticResource Font.Ui}"
+        TextOptions.TextFormattingMode="Ideal"
+        UseLayoutRounding="True">
+    <TabControl Style="{StaticResource Nav.Rail}">
+        <TabItem Header="Dashboard" Style="{StaticResource Nav.Item}">
+            <v:DashboardView/>
+        </TabItem>
+        <TabItem Header="Live events" Style="{StaticResource Nav.Item}">
+            <v:EventsView/>
+        </TabItem>
+        <TabItem Header="Settings" Style="{StaticResource Nav.Item}">
+            <v:SettingsView DataContext="{Binding Settings}"/>
+        </TabItem>
+    </TabControl>
+</Window>

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ProcessShield.Gui</AssemblyName>
+    <RootNamespace>ProcessShield.Gui</RootNamespace>
+    <!-- Requests administrator rights at launch (UAC), needed for ETW + process access. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon></ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reuse the whole detection/response/telemetry/config core from the console app. -->
+    <ProjectReference Include="..\..\ProcessShield.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ship the sample config alongside the GUI so Settings can load/save it. -->
+    <None Include="..\..\shield.config.json" Link="shield.config.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
