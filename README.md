@@ -1,110 +1,175 @@
+<div align="center">
+
+<img src="docs/shield.png" alt="ProcessShield" width="120" />
+
 # ProcessShield
 
-A user-mode behavioral endpoint agent that detects RAT and infostealer IOCs
-(remote-control modules, credential-store access, the collect -> archive -> exfil
-chain), scores them with cross-signal correlation, and responds by suspending,
-firewalling, and quarantining — with an analyst console, a Windows Service host,
-a kernel minifilter for inline prevention, YARA memory scanning, SIEM/audit
-telemetry, and hot-reloadable policy.
+**A user-mode behavioral endpoint agent for Windows that detects RAT & infostealer activity — then suspends, firewalls, and quarantines it.**
 
-> Honest scope: this is a **hardened prototype plus real integration layers**, not
-> a shippable commercial EDR. Two capabilities are gated behind Microsoft programs
-> and cannot be delivered as loadable artifacts here (see "External gates").
+[![License: MIT](https://img.shields.io/badge/License-MIT-3FA9B8.svg)](LICENSE)
+[![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4.svg)](https://dotnet.microsoft.com/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-0E1621.svg)](#)
+[![Status](https://img.shields.io/badge/status-unaudited%20beta-E0A458.svg)](#-honest-scope)
 
-## Architecture
-- **Monitoring** (`Monitoring/`): ETW kernel session (process/image/file/network,
-  PID-attributed) with a WMI fallback, plus a FileSystemWatcher for archive staging.
-- **Detection** (`Detection/`): a single-owner (actor) state machine. All profile
-  state is mutated by one thread; monitors and the console feed one queue, so there
-  are no data races. Thresholds are hot-reloadable.
-- **Memory** (`Memory/`): a bounded builtin substring scanner (ASCII + UTF-16) or a
-  optional YARA engine (`YaraMemoryScanner`, compiled in with `-p:EnableYara=true`;
-  otherwise a stub, so the default build has no dnYara dependency and uses builtin).
-- **Response** (`Response/`): suspend-first quarantine, injection-safe firewall block,
-  archive quarantine, optional kill; trust decisions via full Authenticode.
-- **Security** (`Security/`): `WinVerifyTrust` chain validation + thumbprint pinning.
-- **Telemetry** (`Telemetry/`): JSONL + syslog (RFC 5424) + HTTP webhook sinks, plus
-  a **hash-chained, tamper-evident audit log** with a verifier.
-- **Hosting** (`Hosting/`): Windows Service worker + heartbeat, a mutual **watchdog**,
-  and `sc.exe`/`schtasks` install/uninstall.
-- **Driver** (`kernel/ShieldFilter/` + `Driver/MinifilterClient.cs`): a real FS
-  minifilter that denies opens of sensitive paths, driven by policy from the agent.
+</div>
 
-## Build & run
+<div align="center">
+<img src="docs/dashboard.png" alt="ProcessShield dashboard" width="820" />
+</div>
 
-There are two front-ends: a **console** (`ProcessShield.exe`) and a **WPF desktop
-GUI** (`ProcessShield.Gui.exe`) with a live dashboard, event feed, and settings editor.
+---
 
-**New to this? Follow [`GETTING_STARTED.md`](GETTING_STARTED.md)** for step-by-step
-Visual Studio instructions (build -> test -> run -> install -> beta), including a
-safe detection-simulation script. In short: open **`ProcessShield.sln`** in Visual
-Studio 2022, set **Release / x64**, and Build Solution. CLI equivalents:
+ProcessShield watches processes through an ETW kernel session (with a WMI fallback),
+scores the classic **collect → archive → exfil** chain and remote-control indicators with
+cross-signal correlation, and contains what crosses the line — **suspend-first**, then an
+injection-safe firewall block and archive quarantine, with an optional kill. It ships both a
+**console** and a **WPF desktop GUI**, a **Windows Service** host with a mutual watchdog, a
+real **kernel minifilter** for inline prevention, YARA memory scanning, SIEM/audit telemetry,
+and hot-reloadable policy.
 
+## ⚠️ Honest scope
+
+This is a **hardened prototype plus real integration layers** — not a shippable commercial
+EDR. It runs, detects, and contains on a real machine, but two capabilities are gated behind
+Microsoft programs and cannot be delivered as loadable artifacts here (see
+[External gates](#external-gates-cannot-be-delivered-as-loadable-artifacts)). Use it for
+labs, research, and learning. Red-team runs against live samples, perf/soak testing, and a
+driver security review still stand between this and production.
+
+## Features
+
+| Area | What it does |
+| --- | --- |
+| **Monitoring** | ETW kernel session (process / image / file / TCP, IPv4 **and IPv6**, PID-attributed) with a WMI fallback, plus a `FileSystemWatcher` for archive staging. |
+| **Detection** | Single-owner (actor) state machine — one thread mutates all profile state, so there are no data races. Correlates the exfil chain, LOLBin parent/child, command-line IOCs, and in-memory strings; thresholds hot-reload. |
+| **Trust** | Full **Authenticode** verification (`WinVerifyTrust` chain validation + thumbprint pinning); allowlisted publishers get a scoring discount. Trust is only granted on a cryptographically valid chain. |
+| **Response** | Suspend-first quarantine, injection-safe outbound firewall block, archive quarantine, optional kill — acting only on a **frozen** process so a reused PID is never wrongly hit. |
+| **Memory** | Bounded builtin substring scanner (ASCII + UTF-16), or an optional YARA engine (`-p:EnableYara=true`). Scans run off the detection thread so they never stall it. |
+| **Telemetry** | JSONL + syslog (RFC 5424) + HTTP webhook sinks, plus a **keyed (HMAC-SHA256) hash-chained audit log** with a head-anchor and verifier. |
+| **Hosting** | Windows Service worker + heartbeat, a mutual **watchdog** that performs a real restart of a hung agent, and `sc.exe` / `schtasks` install/uninstall. |
+| **Driver** | A real FS minifilter (`kernel/ShieldFilter/`) that denies opens of sensitive paths, driven by policy pushed from user mode. |
+| **Front-ends** | A **console** analyst REPL and a **WPF GUI** with a live dashboard, event feed, and a settings editor. |
+
+## Quick start
+
+**Requirements:** Windows 10/11 x64, [.NET 8 SDK](https://dotnet.microsoft.com/download),
+and **Administrator** rights at run time (ETW, process access, quarantine).
+
+New here? Follow **[`GETTING_STARTED.md`](GETTING_STARTED.md)** for step-by-step Visual Studio
+instructions plus a safe detection-simulation script. In short — open **`ProcessShield.sln`**
+in Visual Studio 2022, set **Release / x64**, and Build Solution. CLI equivalents:
+
+```bash
+# Build everything
+dotnet build ProcessShield.sln -c Release
+
+# Run the tests
+dotnet test tests/ProcessShield.Tests
+
+# Console agent (from an elevated terminal)
+dotnet run --project ProcessShield.csproj -c Release
+
+# WPF desktop GUI
+dotnet run --project gui/ProcessShield.Gui -c Release
 ```
-dotnet build ProcessShield.csproj -c Release                 # default: builtin memory scanner
-dotnet build ProcessShield.csproj -c Release -p:EnableYara=true   # optional: add the dnYara YARA engine
-# interactive (Administrator):
-ProcessShield.exe
-# service:
-ProcessShield.exe --install        # publish self-contained first (see below)
-ProcessShield.exe --uninstall
+
+Optional YARA engine (adds the dnYara dependency; the default build uses the builtin scanner):
+
+```bash
+dotnet build ProcessShield.csproj -c Release -p:EnableYara=true
 ```
-For the service, publish a self-contained exe so the service binPath is the app
-itself, not dotnet.exe:
-```
-dotnet publish -c Release -r win-x64 --self-contained true
+
+### Run as a Windows Service
+
+Publish a self-contained exe so the service `binPath` is the app itself, not `dotnet.exe`:
+
+```bash
+dotnet publish ProcessShield.csproj -c Release -r win-x64 --self-contained true
 # then, from the publish folder, as Administrator:
-ProcessShield.exe --install
+ProcessShield.exe --install      # install + start the service (+ watchdog task)
+ProcessShield.exe --uninstall    # stop + remove
 ```
 
 ## Analyst console
-`list [all]`, `info N`, `resume N`, `suspend N`, `kill N`, `stats`, `reload`
-(re-reads config), `audit` (verifies the audit chain), `quit`.
 
-## Configuration (`shield.config.json`)
-Thresholds, allowlist (publishers + pinned thumbprints), scan engine
-(`builtin`/`yara`), telemetry sinks, and service/heartbeat settings. Editing the
-file hot-reloads the **posture + allowlist** live; scan-engine and telemetry
+```
+list [all]   show contained (or all flagged) processes
+info N       full reason breakdown for entry N
+resume N     un-suspend entry N (release a false positive)
+suspend N    re-suspend entry N
+kill N       terminate entry N (asks for confirmation)
+stats        engine / queue counters
+reload       re-read shield.config.json
+audit        verify the tamper-evident audit log
+quit         stop the agent and exit
+```
+
+## Configuration — `shield.config.json`
+
+Thresholds, allowlist (publishers + pinned thumbprints), scan engine (`builtin` / `yara`),
+telemetry sinks, and service/heartbeat settings. Editing the file **hot-reloads** the posture
+and allowlist live (a malformed edit keeps the last-good config); scan-engine and telemetry
 endpoint changes take effect on restart.
 
-## Tests
-```
-dotnet test tests/ProcessShield.Tests
-```
-Covers the exfil-chain scoring, trust discount, parent/child and command-line
-rules, the pattern matcher (incl. cross-chunk), the firewall-name sanitizer, the
-audit hash chain (including tamper detection), config clamping, and ActionResult.
+## Security model & honest limitations
+
+- **Audit log integrity.** Records form a keyed HMAC-SHA256 hash chain with a head-anchor, so
+  edits, reordering, interior deletion, and **tail truncation/emptying** are all detectable.
+  The key lives on disk next to the log — this defeats an attacker who only has a copy of the
+  log or can't read the key, so **protect the audit directory with an admin-only ACL**. It does
+  *not* defeat a same-privilege attacker who can read the key. For proof against an
+  equal-privilege adversary, forward every event off-box to an append-only SIEM (the
+  `syslog`/`webhook` sinks) and reconcile against that remote head. See
+  [`GETTING_STARTED.md` §11](GETTING_STARTED.md).
+- **`kernelBlocking: true` is aggressive.** The skeleton driver denies *any* open of a
+  sensitive path while blocking is on, including legitimate apps. Leave it off until the
+  trusted-PID allowlist extension (see the driver README) is added.
+- **Archive quarantine for ETW-detected files.** ETW reports `\Device\HarddiskVolumeN\...`
+  paths that `System.IO` can't open directly, so the move-to-quarantine step no-ops for those
+  (it fails safe; suspend + firewall containment still apply). Archives caught by the
+  `FileSystemWatcher` use drive-letter paths and quarantine correctly.
+
+### External gates (cannot be delivered as loadable artifacts)
+
+- **Tamper protection via PPL/ELAM** requires being an approved anti-malware vendor with an
+  ELAM driver attestation-signed by Microsoft. The watchdog + service recovery raise the bar,
+  but an admin attacker can still kill both.
+- **Production driver signing** needs attestation/WHQL or EV signing via the Partner Center
+  plus a Microsoft-assigned altitude. The driver builds and runs in a test-signed lab as-is.
 
 ## Kernel minifilter
-See `kernel/ShieldFilter/README.md` for building with the WDK, lab test-signing,
-and loading. The agent connects via `MinifilterClient` and pushes policy; if the
-driver is not installed, kernel enforcement is simply unavailable and user-mode
-detection continues.
 
-## External gates (cannot be delivered as loadable artifacts)
-- **Tamper protection via PPL/ELAM**: requires being an approved anti-malware
-  vendor and having an ELAM driver attestation-signed by Microsoft. The watchdog +
-  service recovery here raise the bar, but an admin attacker can still kill both.
-- **Production driver signing**: loading the minifilter on non-test machines needs
-  attestation/WHQL or EV signing via the Partner Center, plus a Microsoft-assigned
-  altitude. The driver builds and runs in a test-signed lab as-is.
+See [`kernel/ShieldFilter/README.md`](kernel/ShieldFilter/README.md) for building with the WDK,
+lab test-signing, and loading. The agent connects via `MinifilterClient` and pushes policy; if
+the driver isn't installed, kernel enforcement is simply unavailable and user-mode detection
+continues.
 
-## Known limitations (beta)
-- **Archive quarantine for ETW-detected files**: ETW kernel file events report
-  `\Device\HarddiskVolumeN\...` paths, which `System.IO` cannot open directly, so
-  the *move-to-quarantine* step no-ops for those (it fails safe, and suspend +
-  firewall containment still apply). Archives caught by the FileSystemWatcher use
-  normal drive-letter paths and quarantine correctly. Device-path translation is a
-  planned follow-up.
-- **`kernelBlocking: true` is aggressive**: the skeleton driver denies *any* open of
-  a sensitive path while blocking is on, including legitimate apps. Leave it off
-  until the trusted-PID allowlist extension (see the driver README) is added.
-- **Not yet done**: red-team runs against live samples, perf/soak testing, and a
-  driver security review still stand between this and production.
+## Tests
 
-## Notes / files most likely to need a per-environment tweak
-The two integration points most likely to need a small
-adjustment are `Memory/YaraMemoryScanner.cs` (only when built with
-`-p:EnableYara=true`; dnYara method names vary by version, and it fails safe to the
-builtin scanner) and `Driver/MinifilterClient.cs`
-(must match the installed driver's message layout).
+```bash
+dotnet test tests/ProcessShield.Tests
+```
+
+Covers exfil-chain scoring, the trust discount, parent/child and command-line rules, the
+pattern matcher (incl. cross-chunk), the firewall-name sanitizer, the audit hash chain
+(intact / tamper / truncation / emptying / timestamp-tamper / re-forge), routable-address
+classification (IPv4 + IPv6), config clamping, the off-thread memory-scan path, PID-reuse
+reset, and `ActionResult`.
+
+## Repository layout
+
+```
+ProcessShield.sln              Console + GUI + Tests (VS2022, x64)
+├─ Program.cs, ProcessShield.csproj    console front-end + core library
+├─ Monitoring/ Detection/ Response/    ETW/WMI → scoring actor → containment
+├─ Memory/ Security/ Telemetry/        scanners, Authenticode, sinks + audit
+├─ Hosting/ Configuration/ Native/     service/watchdog, config, P/Invoke
+├─ gui/ProcessShield.Gui/              WPF desktop app (dashboard/events/settings)
+├─ kernel/ShieldFilter/                C file-system minifilter (built with the WDK)
+├─ rules/                              sample YARA rules
+└─ tests/ProcessShield.Tests/          xUnit suite
+```
+
+## License
+
+[MIT](LICENSE) © elemosecurity

@@ -32,17 +32,27 @@ public sealed class ResponseManager
     /// <summary>Slow containment steps. The initial suspend already ran on the owner thread.</summary>
     public void Contain(ProfileSnapshot snap, bool alreadySuspended, bool autoKill)
     {
-        string? imagePath = ResolveImagePath(snap.Pid) ?? NullIfMissing(snap.ImagePath);
+        // If the target was NOT frozen by the initial suspend, its PID may already have
+        // been recycled by an unrelated process by the time this runs on the response
+        // worker. Never resolve or kill by live PID in that case -- act only on the
+        // trusted snapshot image path -- or we could firewall/kill an innocent process.
+        string? imagePath = alreadySuspended
+            ? ResolveImagePath(snap.Pid) ?? NullIfMissing(snap.ImagePath)
+            : NullIfMissing(snap.ImagePath);
         if (imagePath is not null) AddOutboundFirewallBlock(imagePath, snap.Pid);
         else _log.Action($"pid {snap.Pid}: no resolvable image path; skipped firewall block");
 
         QuarantineArchives(snap);
 
-        if (autoKill)
+        if (autoKill && alreadySuspended)
         {
             var k = KillProcess(snap.Pid);
             _log.Action(k.Ok ? $"pid {snap.Pid} terminated (auto-kill)"
                              : $"pid {snap.Pid} auto-kill failed: {k.Message}");
+        }
+        else if (autoKill)
+        {
+            _log.Action($"pid {snap.Pid} not frozen (suspend failed); auto-kill skipped to avoid acting on a reused PID");
         }
         else
         {

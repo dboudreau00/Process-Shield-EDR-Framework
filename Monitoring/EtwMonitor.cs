@@ -79,6 +79,16 @@ public sealed class EtwMonitor : IDisposable
                 RemotePort = d.dport
             }));
 
+            // IPv6 outbound connects fire a separate event; without this, IPv6 C2/exfil
+            // traffic produces no NetworkConnect signal and evades the network rules.
+            k.TcpIpConnectIPV6 += d => Guard(() => _emit(new Signal
+            {
+                Kind = SignalKind.NetworkConnect,
+                Pid = d.ProcessID,
+                RemoteAddress = d.daddr?.ToString(),
+                RemotePort = d.dport
+            }));
+
             _session = session;
             _pump = new Thread(PumpEvents) { IsBackground = true, Name = "ProcessShield-ETW" };
             _pump.Start();

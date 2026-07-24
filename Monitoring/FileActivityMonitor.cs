@@ -81,10 +81,27 @@ public sealed class FileActivityMonitor : IDisposable
 
     private static IEnumerable<string> CandidateDirectories()
     {
+        // Normalize + de-dupe, then keep a directory only if it is NOT nested under
+        // another kept directory. Each watcher uses IncludeSubdirectories=true, so a
+        // child (e.g. %TEMP%, under LocalAppData) would otherwise be covered twice and
+        // every archive would fire two identical Pid=0 signals -> double scoring.
+        var dirs = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var d in Enumerate())
-            if (!string.IsNullOrEmpty(d) && Directory.Exists(d) && seen.Add(d))
+        {
+            if (string.IsNullOrEmpty(d)) continue;
+            string full;
+            try { full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(d)); }
+            catch { continue; }
+            if (Directory.Exists(full) && seen.Add(full)) dirs.Add(full);
+        }
+
+        foreach (var d in dirs)
+            if (!dirs.Any(other => !ReferenceEquals(other, d) && IsUnder(d, other)))
                 yield return d;
+
+        static bool IsUnder(string child, string parent) =>
+            child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
         static IEnumerable<string> Enumerate()
         {

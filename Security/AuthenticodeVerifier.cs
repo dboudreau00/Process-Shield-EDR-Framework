@@ -39,18 +39,25 @@ public sealed class AuthenticodeVerifier
         {
             if (!File.Exists(path)) return false;
 
-            if (allow.RequireValidChain && !ChainIsValid(path, allow.CheckRevocation))
+            // Trust REQUIRES a cryptographically valid Authenticode chain. CreateFromSignedFile
+            // only extracts the embedded signer cert; it does not prove the signature covers
+            // this file's bytes. So without WinVerifyTrust an attacker can keep a trusted
+            // cert's thumbprint/subject in a tampered binary. Gate BOTH the thumbprint pin and
+            // the subject match on chainOk -- RequireValidChain=false must never downgrade to
+            // "trust the embedded cert with zero validation".
+            bool chainOk = ChainIsValid(path, allow.CheckRevocation);
+            if (allow.RequireValidChain && !chainOk)
                 return false;
 
             using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
             string thumb = cert.Thumbprint ?? "";
             string subject = cert.GetNameInfo(X509NameType.SimpleName, forIssuer: false) ?? "";
 
-            if (allow.Thumbprints.Any(t =>
-                    string.Equals(t.Replace(" ", ""), thumb, StringComparison.OrdinalIgnoreCase)))
+            if (chainOk && allow.Thumbprints.Any(t =>
+                    string.Equals(NormalizeThumbprint(t), thumb, StringComparison.OrdinalIgnoreCase)))
                 return true;
 
-            if (allow.AllowSubjectMatch &&
+            if (chainOk && allow.AllowSubjectMatch &&
                 !string.IsNullOrEmpty(subject) &&
                 allow.Publishers.Any(pub => string.Equals(pub, subject, StringComparison.OrdinalIgnoreCase)))
                 return true;
@@ -62,6 +69,12 @@ public sealed class AuthenticodeVerifier
             return false;   // unsigned, tampered, or inaccessible
         }
     }
+
+    // Keep only hex digits so a pinned thumbprint copied from certmgr (which can carry
+    // an invisible U+200E left-to-right mark, spaces, or colon separators) still matches
+    // the raw uppercase hex returned by X509Certificate2.Thumbprint.
+    private static string NormalizeThumbprint(string s)
+        => new string(s.Where(Uri.IsHexDigit).ToArray());
 
     // ---- WinVerifyTrust interop ----
 

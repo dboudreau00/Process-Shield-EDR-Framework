@@ -11,6 +11,8 @@
     <RootNamespace>ProcessShield</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Same shield mark as the GUI, so ProcessShield.exe is recognizable in Explorer. -->
+    <ApplicationIcon>gui\ProcessShield.Gui\Assets\shield.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!-- Optional YARA engine. OFF by default so the standard build carries no

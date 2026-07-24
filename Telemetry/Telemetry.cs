@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -198,9 +199,21 @@ public sealed class WebhookSink : AsyncSinkBase
 }
 
 /// <summary>
-/// Tamper-evident audit log. Each record embeds the SHA-256 of the previous
-/// record, forming a hash chain; removing or altering any record breaks the chain,
-/// which <see cref="Verify"/> detects.
+/// Tamper-EVIDENT audit log. Each record's Hash is an HMAC-SHA256, keyed by a
+/// per-install secret, over (prevHash || seq || timeUtc || canonical-event), forming a
+/// hash chain. A keyed head-anchor sidecar records the last committed (seq, hash) so
+/// tail truncation and full emptying are detectable -- not just interior edits.
+///
+/// HONEST THREAT MODEL / LIMITATION:
+///  - Detects, even against an attacker who lacks the key: interior edits (incl. the
+///    logged timestamp), reordering, seq gaps, tail truncation, and full emptying.
+///  - The key lives in a sibling "&lt;path&gt;.key" file. Anyone who can READ that key can
+///    re-forge the entire chain. ProcessShield runs elevated, so a SAME-PRIVILEGE
+///    attacker still defeats this; protect the audit directory with an admin-only ACL.
+///  - TRUE tamper-resistance against an equal-privilege adversary requires shipping each
+///    event off-box to an append-only store (see SyslogSink / WebhookSink) and
+///    reconciling the local chain against that remote head. The local chain is evidence,
+///    not a guarantee, against an attacker who already owns the host.
 /// </summary>
 public sealed class AuditLogSink : IEventSink
 {
@@ -208,12 +221,16 @@ public sealed class AuditLogSink : IEventSink
 
     private readonly object _gate = new();
     private readonly string _path;
+    private readonly string _anchorPath;
+    private readonly byte[] _key;
     private string _prevHash;
     private long _seq;
 
     public AuditLogSink(string path)
     {
         _path = path;
+        _anchorPath = path + ".anchor";
+        _key = LoadOrCreateKey(path + ".key");
         (_seq, _prevHash) = RecoverTail(path);
     }
 
@@ -222,20 +239,22 @@ public sealed class AuditLogSink : IEventSink
         lock (_gate)
         {
             string canonical = Json.Event(e);
-            string hash = Sha256Hex(_prevHash + canonical);
+            var recordTime = DateTime.UtcNow;
+            string mac = MacHex(_key, ChainInput(_prevHash, _seq, recordTime, canonical));
             var record = new AuditRecord
             {
                 Seq = _seq,
-                TimeUtc = DateTime.UtcNow,
+                TimeUtc = recordTime,
                 PrevHash = _prevHash,
-                Hash = hash,
+                Hash = mac,
                 Event = e
             };
             try
             {
                 File.AppendAllText(_path, JsonSerializer.Serialize(record, Json.Compact) + Environment.NewLine);
-                _prevHash = hash;
+                _prevHash = mac;
                 _seq++;
+                WriteAnchor(record.Seq, mac);   // best-effort truncation anchor
             }
             catch { /* best effort */ }
         }
@@ -243,57 +262,185 @@ public sealed class AuditLogSink : IEventSink
 
     public void Dispose() { }
 
-    /// <summary>Recomputes the chain and returns true only if every link is intact.</summary>
+    /// <summary>Recomputes the chain and returns true only if every link is intact AND the
+    /// on-disk chain reaches (or exceeds) the keyed head anchor. Loads the key + anchor from
+    /// sibling files next to <paramref name="path"/>.</summary>
     public static bool Verify(string path, out string error)
     {
         error = "";
         try
         {
             if (!File.Exists(path)) { error = "file not found"; return false; }
+
+            byte[] key;
+            try { key = LoadKey(path + ".key"); }
+            catch { error = "audit key missing or unreadable; cannot verify integrity"; return false; }
+
             string prev = Genesis;
             long expectedSeq = 0;
+            long count = 0;
+            long lastSeq = -1;
+            string lastHash = Genesis;
 
             foreach (var line in File.ReadLines(path))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
-                var rec = JsonSerializer.Deserialize<AuditRecord>(line);
+                AuditRecord? rec;
+                try { rec = JsonSerializer.Deserialize<AuditRecord>(line); }
+                catch { error = $"unparsable record at seq {expectedSeq}"; return false; }
                 if (rec is null) { error = $"unparsable record at seq {expectedSeq}"; return false; }
                 if (rec.Seq != expectedSeq) { error = $"seq gap: expected {expectedSeq}, got {rec.Seq}"; return false; }
                 if (rec.PrevHash != prev) { error = $"broken link at seq {rec.Seq}"; return false; }
 
                 string canonical = Json.Event(rec.Event);
-                if (Sha256Hex(rec.PrevHash + canonical) != rec.Hash)
-                { error = $"tampered record at seq {rec.Seq}"; return false; }
+                string mac = MacHex(key, ChainInput(rec.PrevHash, rec.Seq, rec.TimeUtc, canonical));
+                if (!HexEquals(mac, rec.Hash)) { error = $"tampered record at seq {rec.Seq}"; return false; }
 
                 prev = rec.Hash;
+                lastHash = rec.Hash;
+                lastSeq = rec.Seq;
+                count++;
                 expectedSeq++;
             }
+
+            if (count == 0) { error = "audit log is present but empty (all records removed)"; return false; }
+
+            // Truncation / deletion check against the keyed head anchor.
+            if (!TryReadAnchor(path + ".anchor", key, out long anchorSeq, out string anchorHash))
+            {
+                error = "head anchor missing or invalid (possible truncation/deletion)";
+                return false;
+            }
+            if (lastSeq < anchorSeq)
+            {
+                error = $"tail truncated: chain ends at seq {lastSeq} but anchor expects seq {anchorSeq}";
+                return false;
+            }
+            if (lastSeq == anchorSeq && !HexEquals(lastHash, anchorHash))
+            {
+                error = $"head hash mismatch at seq {lastSeq}";
+                return false;
+            }
+            // lastSeq > anchorSeq is tolerated: a concurrent Emit appended records after the
+            // anchor was last written; each is HMAC-verified above, so it is not forged.
             return true;
         }
         catch (Exception ex) { error = ex.Message; return false; }
     }
 
-    private static (long seq, string prevHash) RecoverTail(string path)
+    // Bytes covered by the per-record MAC. TimeUtc is included so a logged timestamp
+    // cannot be altered without breaking the MAC; Seq binds position defence-in-depth.
+    private static string ChainInput(string prevHash, long seq, DateTime timeUtc, string canonical)
+        => prevHash + "|" + seq.ToString(CultureInfo.InvariantCulture) + "|" +
+           timeUtc.ToString("O", CultureInfo.InvariantCulture) + "|" + canonical;
+
+    private void WriteAnchor(long seq, string hash)
     {
         try
         {
-            if (!File.Exists(path)) return (0, Genesis);
-            AuditRecord? last = null;
-            foreach (var line in File.ReadLines(path))
-            {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                var rec = JsonSerializer.Deserialize<AuditRecord>(line);
-                if (rec is not null) last = rec;
-            }
-            return last is null ? (0, Genesis) : (last.Seq + 1, last.Hash);
+            var a = new AnchorRecord { Seq = seq, Hash = hash, Mac = MacHex(_key, AnchorInput(seq, hash)) };
+            string tmp = _anchorPath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(a, Json.Compact));
+            File.Move(tmp, _anchorPath, overwrite: true);   // atomic replace
         }
-        catch { return (0, Genesis); }
+        catch { /* best effort; the next successful Emit re-establishes the anchor */ }
     }
 
-    private static string Sha256Hex(string input)
+    private static bool TryReadAnchor(string anchorPath, byte[] key, out long seq, out string hash)
     {
-        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-        return Convert.ToHexString(hash);
+        seq = -1; hash = "";
+        try
+        {
+            if (!File.Exists(anchorPath)) return false;
+            var a = JsonSerializer.Deserialize<AnchorRecord>(File.ReadAllText(anchorPath));
+            if (a is null) return false;
+            if (!HexEquals(MacHex(key, AnchorInput(a.Seq, a.Hash)), a.Mac)) return false;
+            seq = a.Seq; hash = a.Hash; return true;
+        }
+        catch { return false; }
+    }
+
+    private static string AnchorInput(long seq, string hash)
+        => "anchor|" + seq.ToString(CultureInfo.InvariantCulture) + "|" + hash;
+
+    private static (long seq, string prevHash) RecoverTail(string path)
+    {
+        // Robust recovery: a crash/power-loss can leave a truncated final line, and a
+        // transient read error must NOT silently reset an existing chain to (0, Genesis)
+        // -- that would renumber from 0 and corrupt the log permanently. Parse line by
+        // line, keep the last fully-parsed record, and drop any dangling partial tail so
+        // the next append stays clean and verifiable. A genuine IO error propagates (the
+        // ctor's caller, BuildSink, disables the audit sink loudly rather than resetting).
+        if (!File.Exists(path)) return (0, Genesis);
+        byte[] all = File.ReadAllBytes(path);
+        if (all.Length == 0) return (0, Genesis);
+
+        string text = Encoding.UTF8.GetString(all);
+        AuditRecord? last = null;
+        int i = 0, validEnd = 0;
+        while (i < text.Length)
+        {
+            int nl = text.IndexOf('\n', i);
+            bool hasNl = nl >= 0;
+            int end = hasNl ? nl + 1 : text.Length;
+            string line = text.Substring(i, end - i).Trim('\r', '\n', ' ', '\t');
+            i = end;
+            if (line.Length == 0) { if (hasNl) validEnd = i; continue; }
+
+            AuditRecord? rec = null;
+            try { rec = JsonSerializer.Deserialize<AuditRecord>(line); } catch { }
+            if (rec is null || !hasNl) break;   // corrupt OR unterminated final line = partial write; stop
+            last = rec;
+            validEnd = i;
+        }
+
+        if (validEnd < all.Length)
+        {
+            try
+            {
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None);
+                fs.SetLength(Encoding.UTF8.GetByteCount(text[..validEnd]));
+            }
+            catch { /* keep monotonic seq even if truncation fails; never reset to 0 */ }
+        }
+
+        return last is null ? (0, Genesis) : (last.Seq + 1, last.Hash);
+    }
+
+    private static byte[] LoadOrCreateKey(string keyPath)
+    {
+        try
+        {
+            if (File.Exists(keyPath))
+            {
+                string hex = File.ReadAllText(keyPath).Trim();
+                if (hex.Length == 64) return Convert.FromHexString(hex);
+            }
+        }
+        catch { /* fall through to (re)create */ }
+
+        byte[] key = RandomNumberGenerator.GetBytes(32);
+        try { File.WriteAllText(keyPath, Convert.ToHexString(key)); }
+        catch { /* if we can't persist it, later Verify fails loudly rather than passing silently */ }
+        return key;
+    }
+
+    private static byte[] LoadKey(string keyPath)
+    {
+        string hex = File.ReadAllText(keyPath).Trim();
+        if (hex.Length != 64) throw new InvalidOperationException("audit key has unexpected length");
+        return Convert.FromHexString(hex);
+    }
+
+    private static string MacHex(byte[] key, string input)
+        => Convert.ToHexString(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(input)));
+
+    // Constant-time compare of two hex strings to avoid a timing oracle on the MAC.
+    private static bool HexEquals(string a, string b)
+    {
+        if (a.Length != b.Length) return false;
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.ASCII.GetBytes(a), Encoding.ASCII.GetBytes(b));
     }
 
     private sealed class AuditRecord
@@ -303,5 +450,12 @@ public sealed class AuditLogSink : IEventSink
         public string PrevHash { get; set; } = "";
         public string Hash { get; set; } = "";
         public ShieldEvent Event { get; set; } = new();
+    }
+
+    private sealed class AnchorRecord
+    {
+        public long Seq { get; set; }
+        public string Hash { get; set; } = "";
+        public string Mac { get; set; } = "";
     }
 }

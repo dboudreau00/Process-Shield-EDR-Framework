@@ -36,7 +36,10 @@ public sealed class WmiProcessMonitor : IDisposable
     {
         try
         {
-            using var target = (ManagementBaseObject)e.NewEvent["TargetInstance"];
+            // Dispose BOTH the outer event and the embedded instance -- each wraps an
+            // IWbemClassObject COM object that leaks otherwise, once per process start.
+            using var ev = e.NewEvent;
+            using var target = (ManagementBaseObject)ev["TargetInstance"];
             _emit(new Signal
             {
                 Kind = SignalKind.ProcessStart,

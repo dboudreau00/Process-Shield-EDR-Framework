@@ -175,12 +175,23 @@ static bool RelaunchElevated(string[] args)
     {
         string? exe = Environment.ProcessPath;
         if (string.IsNullOrEmpty(exe)) return false;
+
+        // Resolve a relative --config against the CALLER's cwd here, in the non-elevated
+        // parent, before relaunch. The elevated child's working directory is forced to the
+        // exe folder (a "runas" child does not inherit our cwd -- it defaults to System32),
+        // so a forwarded relative path would otherwise resolve to the wrong place and the
+        // elevated instance would silently run with the default posture.
+        var forwarded = (string[])args.Clone();
+        for (int i = 0; i < forwarded.Length - 1; i++)
+            if (string.Equals(forwarded[i], "--config", StringComparison.OrdinalIgnoreCase))
+                forwarded[i + 1] = Path.GetFullPath(forwarded[i + 1]);
+
         var psi = new ProcessStartInfo(exe)
         {
             UseShellExecute = true,
             Verb = "runas",
             WorkingDirectory = AppContext.BaseDirectory,
-            Arguments = string.Join(' ', args.Select(a => a.Contains(' ') ? $"\"{a}\"" : a))
+            Arguments = string.Join(' ', forwarded.Select(a => a.Contains(' ') ? $"\"{a}\"" : a))
         };
         Process.Start(psi);
         return true;

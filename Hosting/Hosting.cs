@@ -47,7 +47,7 @@ public sealed class Composition : IDisposable
         var log = new Logger();
         var cfg = ConfigLoader.Load(configPath, m => log.Info("config: " + m));
 
-        var sink = BuildSink(cfg.Telemetry, extraSink);
+        var sink = BuildSink(cfg.Telemetry, log, extraSink);
         log.SetSink(sink);
 
         var verifier = new AuthenticodeVerifier(cfg.Allowlist);
@@ -63,8 +63,8 @@ public sealed class Composition : IDisposable
         };
 
         var response = new ResponseManager(log, verifier);
-        var engine = new DetectionEngine(options, scanner, response.IsTrusted);
-        var host = new ShieldHost(cfg.Detection.AutoKill, engine, response, log);
+        var engine = new DetectionEngine(options, response.IsTrusted);
+        var host = new ShieldHost(cfg.Detection.AutoKill, engine, response, scanner, log);
 
         var comp = new Composition(configPath, cfg, log, verifier, sink, scanner, host);
         comp._configWatcher = ConfigLoader.Watch(configPath, comp.Apply, m => log.Info("config: " + m));
@@ -91,13 +91,16 @@ public sealed class Composition : IDisposable
         catch (Exception ex) { Log.Error("minifilter setup", ex); }
     }
 
-    private static CompositeSink BuildSink(TelemetryConfig t, IEventSink? extra)
+    private static CompositeSink BuildSink(TelemetryConfig t, Logger log, IEventSink? extra)
     {
-        var sinks = new List<IEventSink>
-        {
-            new JsonlSink(t.JsonlPath),
-            new AuditLogSink(t.AuditPath)
-        };
+        var sinks = new List<IEventSink> { new JsonlSink(t.JsonlPath) };
+
+        // Open the audit log defensively: if its file is genuinely unreadable (locked,
+        // permissions), disable the audit sink LOUDLY and keep the agent running rather
+        // than crashing startup or silently resetting the tamper-evident chain.
+        try { sinks.Add(new AuditLogSink(t.AuditPath)); }
+        catch (Exception ex) { log.Error("audit log unavailable; audit sink disabled", ex); }
+
         if (t.Syslog.Enabled)
             sinks.Add(new SyslogSink(t.Syslog.Host, t.Syslog.Port, t.Syslog.Protocol, t.Syslog.AppName));
         if (t.Webhook.Enabled && !string.IsNullOrWhiteSpace(t.Webhook.Url))
@@ -119,8 +122,15 @@ public sealed class Composition : IDisposable
         return new MemoryScanner(IocDatabase.MemoryStringIocs);
     }
 
-    /// <summary>Manual reload trigger (console 'reload').</summary>
-    public void ReloadConfig() => Apply(ConfigLoader.Load(_configPath, m => Log.Info("config: " + m)));
+    /// <summary>Manual reload trigger (console 'reload'). Keeps the current config on a
+    /// parse/read failure instead of failing open to defaults.</summary>
+    public void ReloadConfig()
+    {
+        if (ConfigLoader.TryLoad(_configPath, out var next, m => Log.Info("config: " + m)))
+            Apply(next);
+        else
+            Log.Info("config: reload skipped; keeping current config");
+    }
 
     /// <summary>Apply the hot-reloadable subset (posture + allowlist).</summary>
     private void Apply(ShieldConfig next)
@@ -143,7 +153,7 @@ public sealed class Composition : IDisposable
 
     public string VerifyAudit()
         => AuditLogSink.Verify(Config.Telemetry.AuditPath, out var err)
-            ? "audit log intact"
+            ? "audit chain intact (local integrity only; an equal-privilege attacker with the key could re-forge it — off-box sinks are the true anchor)"
             : "AUDIT LOG TAMPERED/BROKEN: " + err;
 
     public void Dispose()
@@ -240,7 +250,7 @@ public static class Watchdog
                 if (HeartbeatAge(hbPath) is not { } age || age > stale)
                 {
                     Console.WriteLine($"[watchdog] heartbeat stale; restarting '{svc}'");
-                    ServiceControl.Start(svc);
+                    ServiceControl.Restart(svc);
                 }
             }
             catch (Exception ex) { Console.Error.WriteLine($"[watchdog] {ex.Message}"); }
@@ -283,7 +293,10 @@ public static class ServiceControl
 
         string svc = cfg.Service.ServiceName;
         int rc = 0;
-        rc |= Sc("create", svc, "binPath=", exe, "start=", "auto", "DisplayName=", "ProcessShield EDR");
+        // Quote the binPath value so the stored ImagePath is quoted (CWE-428). An
+        // unquoted "C:\Program Files\...\ProcessShield.exe" lets a local user drop
+        // C:\Program.exe and get it run as LocalSystem. sc.exe never adds quotes itself.
+        rc |= Sc("create", svc, "binPath=", $"\"{exe}\"", "start=", "auto", "DisplayName=", "ProcessShield EDR");
         Sc("description", svc, "User-mode behavioral shield for RAT / infostealer IOCs");
         Sc("failure", svc, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/5000");
 
@@ -308,7 +321,93 @@ public static class ServiceControl
 
     public static int Start(string serviceName) => Sc("start", serviceName);
 
+    /// <summary>
+    /// Real restart for the watchdog: a bare `sc start` is a no-op (error 1056) when the
+    /// service process is alive-but-hung, which is exactly the case a heartbeat watchdog
+    /// exists to recover. Stop it (force-killing the PID if it won't honor STOP), wait for
+    /// STOPPED, then start.
+    /// </summary>
+    public static int Restart(string serviceName)
+    {
+        if (IsRunning(serviceName))
+        {
+            Sc("stop", serviceName);
+            if (!WaitForState(serviceName, "STOPPED", TimeSpan.FromSeconds(20)))
+            {
+                ForceKill(serviceName);                       // hung: won't honor SERVICE_CONTROL_STOP
+                WaitForState(serviceName, "STOPPED", TimeSpan.FromSeconds(10));
+            }
+        }
+        int rc = Sc("start", serviceName);
+        // SCM failure-actions may have already restarted a crashed service; treat
+        // ERROR_SERVICE_ALREADY_RUNNING (1056) as success so recovery isn't a "failure".
+        return rc == 1056 ? 0 : rc;
+    }
+
+    private static bool IsRunning(string serviceName)
+        => QueryState(serviceName)?.Contains("RUNNING", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool WaitForState(string serviceName, string target, TimeSpan timeout)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
+        {
+            var st = QueryState(serviceName);
+            if (st is not null && st.Contains(target, StringComparison.OrdinalIgnoreCase)) return true;
+            Thread.Sleep(500);
+        }
+        return QueryState(serviceName)?.Contains(target, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static string? QueryState(string serviceName)
+    {
+        var (rc, outp) = Capture("sc", "query", serviceName);
+        if (rc != 0 || string.IsNullOrEmpty(outp)) return null;
+        foreach (var line in outp.Split('\n'))
+            if (line.Contains("STATE", StringComparison.OrdinalIgnoreCase)) return line;
+        return null;
+    }
+
+    private static void ForceKill(string serviceName)
+    {
+        var (rc, outp) = Capture("sc", "queryex", serviceName);
+        if (rc != 0 || string.IsNullOrEmpty(outp)) return;
+        foreach (var line in outp.Split('\n'))
+        {
+            int idx = line.IndexOf("PID", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            int colon = line.IndexOf(':', idx);
+            if (colon >= 0 && int.TryParse(line[(colon + 1)..].Trim(), out int pid) && pid > 0)
+                RunTool("taskkill", "/F", "/PID", pid.ToString());
+            return;
+        }
+    }
+
     private static int Sc(params string[] args) => RunTool("sc", args);
+
+    // Like RunTool but returns captured stdout for parsing `sc query`/`queryex`.
+    private static (int code, string stdout) Capture(string tool, params string[] args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(tool)
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+
+            using var p = Process.Start(psi);
+            if (p is null) return (-1, "");
+            string outp = p.StandardOutput.ReadToEnd();
+            _ = p.StandardError.ReadToEnd();
+            p.WaitForExit(15000);
+            return (p.HasExited ? p.ExitCode : -1, outp);
+        }
+        catch { return (-1, ""); }
+    }
 
     private static int RunTool(string tool, params string[] args)
     {

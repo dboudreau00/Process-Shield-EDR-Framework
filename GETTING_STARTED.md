@@ -269,8 +269,17 @@ take effect on restart.
 ## 11. Telemetry & audit
 
 - `incidents.jsonl` - one JSON line per WARN/QUARANTINE/ACTION event.
-- `audit.log` - the same events in a **SHA-256 hash chain**; run `audit` in the
-  console (or `AuditLogSink.Verify`) to prove nothing was altered or deleted.
+- `audit.log` - the same events in a **keyed (HMAC-SHA256) hash chain** with a sibling
+  head-anchor (`audit.log.anchor`) and key (`audit.log.key`). Run `audit` in the console
+  (or `AuditLogSink.Verify`) to detect alteration, reordering, interior deletion, tail
+  truncation, and emptying.
+  - **Honest scope:** the key lives on disk next to the log. This defeats an attacker who
+    has only a copy of the log, or who cannot read the key — so **protect the audit
+    directory with an admin-only ACL**. It does *not* defeat a same-privilege attacker who
+    can read the key (ProcessShield runs elevated, so a same-integrity RAT can re-forge the
+    chain). For proof against an equal-privilege adversary, forward every event off-box to
+    an append-only SIEM (enable the `syslog`/`webhook` sinks) and reconcile against that
+    remote head — the local chain is evidence, not a guarantee, once the host is owned.
 
 ---
 

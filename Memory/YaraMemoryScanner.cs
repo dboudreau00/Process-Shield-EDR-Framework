@@ -38,7 +38,7 @@ public sealed class YaraMemoryScanner : IMemoryScanner, IDisposable
             }
 
             _ctx = new YaraContext();
-            var compiler = new Compiler();
+            using var compiler = new Compiler();   // dispose the native YR_COMPILER after Compile()
             foreach (var f in files) compiler.AddRuleFile(f);
             _rules = compiler.Compile();
             _scanner = new Scanner();
@@ -62,7 +62,7 @@ public sealed class YaraMemoryScanner : IMemoryScanner, IDisposable
             try
             {
                 byte[] slice = len == buf.Length ? buf : buf[..len];
-                var results = _scanner.ScanMemory(slice, _rules);
+                var results = _scanner.ScanMemory(ref slice, _rules);
                 foreach (var r in results)
                     if (r.MatchingRule?.Identifier is { } id) hits.Add(id);
             }
