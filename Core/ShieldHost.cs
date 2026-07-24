@@ -45,11 +45,31 @@ public sealed class ShieldHost : IDisposable
         public required bool AutoKill { get; init; }
     }
 
+    // Follow-up commands posted BACK to the owner thread after off-thread work, so all
+    // engine-state mutation stays single-threaded (no lock on the profile store).
+    private sealed class KillDoneCommand : Command
+    {
+        public required int Pid { get; init; }
+        public required TaskCompletionSource<ActionResult> Result { get; init; }
+        public required ActionResult Outcome { get; init; }
+    }
+
+    private sealed class MemScanResultCommand : Command
+    {
+        public required int Pid { get; init; }
+        public required IReadOnlyList<string> Hits { get; init; }
+    }
+
     private readonly DetectionEngine _engine;
     private readonly ResponseManager _response;
+    private readonly IMemoryScanner _scanner;
     private readonly Logger _log;
 
-    private readonly BlockingCollection<Command> _queue = new(boundedCapacity: 8192);
+    // Telemetry (high-volume) and analyst/config control commands use SEPARATE queues so
+    // a telemetry flood can never starve or delay an operator action. The owner thread
+    // drains the control queue with priority over signals.
+    private readonly BlockingCollection<Command> _signalQueue = new(boundedCapacity: 8192);
+    private readonly BlockingCollection<Command> _controlQueue = new(boundedCapacity: 1024);
     private readonly BlockingCollection<Action> _responseQueue = new(boundedCapacity: 1024);
 
     private Thread? _ownerThread;
@@ -68,11 +88,13 @@ public sealed class ShieldHost : IDisposable
 
     public string ActiveMonitors { get; private set; } = "none";
 
-    public ShieldHost(bool autoKill, DetectionEngine engine, ResponseManager response, Logger log)
+    public ShieldHost(bool autoKill, DetectionEngine engine, ResponseManager response,
+        IMemoryScanner scanner, Logger log)
     {
         _autoKill = autoKill;
         _engine = engine;
         _response = response;
+        _scanner = scanner;
         _log = log;
     }
 
@@ -134,7 +156,8 @@ public sealed class ShieldHost : IDisposable
         SafeDispose(ref _wmi);
         SafeDispose(ref _files);
 
-        try { _queue.CompleteAdding(); } catch { }
+        try { _signalQueue.CompleteAdding(); } catch { }
+        try { _controlQueue.CompleteAdding(); } catch { }
         _ownerThread?.Join(TimeSpan.FromSeconds(5));
 
         try { _responseQueue.CompleteAdding(); } catch { }
@@ -149,7 +172,8 @@ public sealed class ShieldHost : IDisposable
     public void Dispose()
     {
         Stop();
-        try { _queue.Dispose(); } catch { }
+        try { _signalQueue.Dispose(); } catch { }
+        try { _controlQueue.Dispose(); } catch { }
         try { _responseQueue.Dispose(); } catch { }
     }
 
@@ -159,7 +183,7 @@ public sealed class ShieldHost : IDisposable
     {
         try
         {
-            if (!_queue.TryAdd(new SignalCommand { Signal = s }))
+            if (!_signalQueue.TryAdd(new SignalCommand { Signal = s }))
                 Interlocked.Increment(ref _signalsDropped);
         }
         catch (InvalidOperationException) { /* shutting down */ }
@@ -197,7 +221,7 @@ public sealed class ShieldHost : IDisposable
     public string Stats() =>
         $"processed={Interlocked.Read(ref _signalsProcessed)} " +
         $"dropped={Interlocked.Read(ref _signalsDropped)} " +
-        $"queued={_queue.Count} " +
+        $"queued={_signalQueue.Count} " +
         $"responsesRun={Interlocked.Read(ref _responsesRun)} " +
         $"responseErrors={Interlocked.Read(ref _responseErrors)} " +
         $"autoKill={_autoKill} monitors=[{ActiveMonitors}]";
@@ -212,7 +236,7 @@ public sealed class ShieldHost : IDisposable
 
     private bool TryPost(Command cmd)
     {
-        try { _queue.Add(cmd); return true; }
+        try { _controlQueue.Add(cmd); return true; }
         catch (InvalidOperationException) { return false; }
     }
 
@@ -226,15 +250,31 @@ public sealed class ShieldHost : IDisposable
 
     private void OwnerLoop()
     {
+        var queues = new[] { _controlQueue, _signalQueue };
         try
         {
-            foreach (var cmd in _queue.GetConsumingEnumerable())
+            while (true)
             {
-                try { Dispatch(cmd); }
-                catch (Exception ex) { _log.Error("owner dispatch", ex); FailCommand(cmd); }
+                // Drain ALL pending control commands before touching a signal, so analyst
+                // actions and config reloads are never delayed behind queued telemetry.
+                while (_controlQueue.TryTake(out var ctrl))
+                    DispatchSafe(ctrl);
+
+                Command? cmd;
+                int idx;
+                try { idx = BlockingCollection<Command>.TakeFromAny(queues, out cmd); }
+                catch (Exception) { break; }   // a queue was completed/disposed during shutdown
+                if (idx < 0 || cmd is null) break;   // both queues completed and empty
+                DispatchSafe(cmd);
             }
         }
         catch (Exception ex) { _log.Error("owner loop terminated", ex); }
+    }
+
+    private void DispatchSafe(Command cmd)
+    {
+        try { Dispatch(cmd); }
+        catch (Exception ex) { _log.Error("owner dispatch", ex); FailCommand(cmd); }
     }
 
     private void Dispatch(Command cmd)
@@ -245,6 +285,10 @@ public sealed class ShieldHost : IDisposable
                 Interlocked.Increment(ref _signalsProcessed);
                 foreach (var verdict in _engine.Ingest(sc.Signal))
                     OnVerdict(verdict);
+                // Offload the (up to ~2s) memory scan to the response worker so it never
+                // stalls the detection loop; hits fold back in via MemScanResultCommand.
+                if (sc.Signal.Pid > 0 && _engine.TryClaimMemoryScan(sc.Signal.Pid))
+                    ScheduleMemoryScan(sc.Signal.Pid);
                 break;
 
             case ListCommand lc:
@@ -252,7 +296,17 @@ public sealed class ShieldHost : IDisposable
                 break;
 
             case ActionCommand ac:
-                ac.Result.TrySetResult(ExecuteAction(ac.Kind, ac.Pid));
+                DispatchAction(ac);
+                break;
+
+            case KillDoneCommand kd:
+                if (kd.Outcome.Ok) _engine.SetTerminated(kd.Pid);
+                kd.Result.TrySetResult(kd.Outcome);
+                break;
+
+            case MemScanResultCommand mr:
+                foreach (var verdict in _engine.ApplyMemoryHits(mr.Pid, mr.Hits))
+                    OnVerdict(verdict);
                 break;
 
             case ConfigCommand cc:
@@ -263,12 +317,47 @@ public sealed class ShieldHost : IDisposable
         }
     }
 
+    // The blocking analyst kill (WaitForExit up to 3s) must not run on the detection
+    // thread. Offload it to the response worker and complete the caller's result on the
+    // owner thread via a KillDoneCommand, keeping all engine mutation single-threaded.
+    private void DispatchAction(ActionCommand ac)
+    {
+        if (ac.Kind != ActionKind.Kill)
+        {
+            ac.Result.TrySetResult(ExecuteAction(ac.Kind, ac.Pid));
+            return;
+        }
+
+        var tcs = ac.Result;
+        int pid = ac.Pid;
+        bool scheduled = EnqueueResponse(() =>
+        {
+            var r = ResponseManager.KillProcess(pid);
+            TryPost(new KillDoneCommand { Pid = pid, Result = tcs, Outcome = r });
+        });
+        if (!scheduled)
+            tcs.TrySetResult(ActionResult.Fail("response queue full; kill not scheduled"));
+    }
+
+    private void ScheduleMemoryScan(int pid)
+    {
+        EnqueueResponse(() =>
+        {
+            IReadOnlyList<string> hits;
+            try { hits = _scanner.Scan(pid); }
+            catch { return; }
+            if (hits.Count > 0)
+                TryPost(new MemScanResultCommand { Pid = pid, Hits = hits });
+        });
+    }
+
     private static void FailCommand(Command cmd)
     {
         switch (cmd)
         {
             case ListCommand lc: lc.Result.TrySetResult(Array.Empty<ProfileSnapshot>()); break;
             case ActionCommand ac: ac.Result.TrySetResult(ActionResult.Fail("engine error")); break;
+            case KillDoneCommand kd: kd.Result.TrySetResult(ActionResult.Fail("engine error")); break;
         }
     }
 
@@ -313,16 +402,19 @@ public sealed class ShieldHost : IDisposable
             }
             case ActionKind.Suspend:
             {
+                // NtSuspendProcess is COUNTED, but we model suspension as a boolean and a
+                // single Resume issues one NtResumeProcess. A redundant suspend would then
+                // need two resumes to thaw. Skip if this profile is already suspended so
+                // "SuspendedByAnalyst==true" stays 1:1 with one outstanding OS suspend.
+                var snap = _engine.SnapshotOne(pid);
+                if (snap is not null && snap.SuspendedByAnalyst)
+                    return ActionResult.Success($"pid {pid} already suspended");
                 var r = ResponseManager.SuspendProcess(pid);
                 if (r.Ok) _engine.SetSuspendedByAnalyst(pid, true);
                 return r;
             }
-            case ActionKind.Kill:
-            {
-                var r = ResponseManager.KillProcess(pid);
-                if (r.Ok) _engine.SetTerminated(pid);
-                return r;
-            }
+            // ActionKind.Kill is handled asynchronously in DispatchAction (offloaded to
+            // the response worker), so it never reaches here.
             default:
                 return ActionResult.Fail("unknown action");
         }
@@ -344,17 +436,16 @@ public sealed class ShieldHost : IDisposable
 
     // --------------------------------------------------------- response thread
 
-    private void EnqueueResponse(Action work)
+    private bool EnqueueResponse(Action work)
     {
         try
         {
-            if (!_responseQueue.TryAdd(work))
-            {
-                Interlocked.Increment(ref _responseErrors);
-                _log.Error("response backlog", new InvalidOperationException("queue full; dropped a containment task"));
-            }
+            if (_responseQueue.TryAdd(work)) return true;
+            Interlocked.Increment(ref _responseErrors);
+            _log.Error("response backlog", new InvalidOperationException("queue full; dropped a containment task"));
+            return false;
         }
-        catch (InvalidOperationException) { /* shutting down */ }
+        catch (InvalidOperationException) { return false; /* shutting down */ }
     }
 
     private void ResponseLoop()

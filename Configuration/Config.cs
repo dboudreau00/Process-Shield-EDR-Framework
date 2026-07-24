@@ -112,6 +112,42 @@ public static class ConfigLoader
         }
     }
 
+    /// <summary>
+    /// Strict loader for hot-reload: returns false (and leaves <paramref name="config"/>
+    /// as a throwaway default) when the file is missing, unparsable, or partially written,
+    /// so the caller can KEEP its current tuned posture/allowlist instead of silently
+    /// reverting to defaults. Use Load (not this) for first-time startup.
+    /// </summary>
+    public static bool TryLoad(string path, out ShieldConfig config, Action<string>? warn = null)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                warn?.Invoke($"config '{path}' missing on reload; keeping current config");
+                config = new ShieldConfig();
+                return false;
+            }
+            var json = File.ReadAllText(path);
+            var cfg = JsonSerializer.Deserialize<ShieldConfig>(json, Options);
+            if (cfg is null)
+            {
+                warn?.Invoke("config reload parsed to null; keeping current config");
+                config = new ShieldConfig();
+                return false;
+            }
+            cfg.ClampAndValidate();
+            config = cfg;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            warn?.Invoke($"config reload parse failed ({ex.Message}); keeping current config");
+            config = new ShieldConfig();
+            return false;
+        }
+    }
+
     public static void WriteTemplate(string path)
     {
         try { File.WriteAllText(path, JsonSerializer.Serialize(new ShieldConfig(), Options)); }
@@ -136,7 +172,10 @@ public static class ConfigLoader
 
             var w = new FileSystemWatcher(dir, file)
             {
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size,
+                // FileName is required for Created/Renamed to ever fire -- editors that
+                // save via write-temp-then-atomic-rename (VS Code, many others) only
+                // surface as a Renamed/Created of the target, not a LastWrite/Size change.
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
                 EnableRaisingEvents = true
             };
             DateTime last = DateTime.MinValue;
@@ -146,11 +185,14 @@ public static class ConfigLoader
                 if (now - last < TimeSpan.FromMilliseconds(500)) return;   // debounce
                 last = now;
                 System.Threading.Thread.Sleep(150);                       // let the writer finish
-                try { onReload(Load(path, warn)); }
+                // Only push a successfully-parsed config; a malformed/partial edit keeps
+                // the current posture instead of silently reverting to defaults.
+                try { if (TryLoad(path, out var cfg, warn)) onReload(cfg); }
                 catch (Exception ex) { warn?.Invoke($"config reload failed: {ex.Message}"); }
             }
             w.Changed += Handler;
             w.Created += Handler;
+            w.Renamed += Handler;
             return w;
         }
         catch (Exception ex)

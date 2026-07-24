@@ -32,15 +32,13 @@ public sealed class DetectionEngine
     private TimeSpan _window;
     private int _trustDiscount;
 
-    private readonly IMemoryScanner _memScanner;
     private readonly Func<int, bool> _isTrusted;
 
     private readonly Dictionary<int, ThreatProfile> _profiles = new();
     private DateTime _lastPrune = DateTime.UtcNow;
 
-    public DetectionEngine(EngineOptions opt, IMemoryScanner memScanner, Func<int, bool> isTrusted)
+    public DetectionEngine(EngineOptions opt, Func<int, bool> isTrusted)
     {
-        _memScanner = memScanner;
         _isTrusted = isTrusted;
         Apply(opt.WarnThreshold, opt.QuarantineThreshold,
               (int)opt.CorrelationWindow.TotalSeconds, opt.TrustDiscount);
@@ -71,6 +69,13 @@ public sealed class DetectionEngine
         }
         if (s.Pid <= 0) return results;
 
+        // A second ProcessStart for a PID means Windows recycled it: drop any stale
+        // profile so the reused PID starts clean and cannot inherit the prior process's
+        // Contained/Terminated/Score state (which would suppress containment on a new,
+        // possibly malicious, process -- a fail-open PID-reuse hole).
+        if (s.Kind == SignalKind.ProcessStart)
+            _profiles.Remove(s.Pid);
+
         var p = GetOrAdd(s.Pid);
         if (!string.IsNullOrEmpty(s.ProcessName)) p.ProcessName = s.ProcessName;
         if (!string.IsNullOrEmpty(s.ImagePath)) p.ImagePath = s.ImagePath;
@@ -83,8 +88,10 @@ public sealed class DetectionEngine
             case SignalKind.NetworkConnect: RuleNetwork(p, s);      break;
         }
 
-        MaybeScanMemory(p);
-
+        // NB: the memory scan is NOT run here. It can take up to ~2s per process, which
+        // would stall the single detection thread. ShieldHost claims the scan via
+        // TryClaimMemoryScan and runs it on the response worker, folding results back in
+        // through ApplyMemoryHits. See fix for the concurrency-starvation issue.
         var r = Decide(p, s.Kind.ToString());
         if (r is not null) results.Add(r);
         return results;
@@ -164,10 +171,12 @@ public sealed class DetectionEngine
         string ext = Path.GetExtension(file);
         bool isArchive = IocDatabase.ArchiveExtensions.Contains(ext);
         bool inStaging = IocDatabase.StagingDirFragments.Any(file.Contains);
-        if (isArchive && inStaging)
+        // Gate the whole block on the de-dup insert so a repeated notification of the
+        // SAME archive (e.g. two overlapping FileSystemWatchers, or ETW + watcher) can't
+        // score the process twice.
+        if (isArchive && inStaging && p.StagedArchives.Add(file))
         {
             p.ArchiveStagedUtc = s.TimestampUtc;
-            p.StagedArchives.Add(file);
             p.Add(30, "Created archive in a staging directory");
 
             if (p.CredentialAccessUtc is { } c && s.TimestampUtc - c <= _window)
@@ -196,8 +205,8 @@ public sealed class DetectionEngine
             if (p.Score <= 0 || p.Contained) continue;
             if (now - p.LastUpdatedUtc > _window) continue;
 
+            if (!p.StagedArchives.Add(file)) continue;   // score each distinct archive once
             p.ArchiveStagedUtc = now;
-            p.StagedArchives.Add(file);
             p.Add(25, $"Archive '{Path.GetFileName(s.FilePath)}' staged near flagged activity");
 
             var r = Decide(p, "ArchiveCorrelation");
@@ -205,18 +214,34 @@ public sealed class DetectionEngine
         }
     }
 
-    private void MaybeScanMemory(ThreatProfile p)
+    /// <summary>
+    /// Owner-thread only. Returns true at most once per process, when its score first
+    /// crosses the scan threshold, and marks it claimed so the scan isn't scheduled
+    /// twice. The caller (ShieldHost) runs the actual scan off the detection thread.
+    /// </summary>
+    public bool TryClaimMemoryScan(int pid)
     {
-        if (p.MemoryScanned || p.Score < _scanAt) return;
+        if (!_profiles.TryGetValue(pid, out var p)) return false;
+        if (p.MemoryScanned || p.Score < _scanAt) return false;
         p.MemoryScanned = true;
+        return true;
+    }
 
-        IReadOnlyList<string> hits;
-        try { hits = _memScanner.Scan(p.Pid); }
-        catch { return; }
+    /// <summary>
+    /// Owner-thread only. Folds memory-scan hits into the profile and re-decides, so a
+    /// process that only crosses a threshold because of an in-memory IOC is still caught
+    /// (a moment later than an inline scan would, which is the accepted trade-off).
+    /// </summary>
+    public IReadOnlyList<DetectionResult> ApplyMemoryHits(int pid, IReadOnlyList<string> hits)
+    {
+        var results = new List<DetectionResult>();
+        if (hits.Count == 0) return results;
+        if (!_profiles.TryGetValue(pid, out var p)) return results;
 
-        if (hits.Count > 0)
-            p.Add(20 + 5 * Math.Min(hits.Count, 6),
-                  "Memory IOC(s): " + string.Join(", ", hits));
+        p.Add(20 + 5 * Math.Min(hits.Count, 6), "Memory IOC(s): " + string.Join(", ", hits));
+        var r = Decide(p, "MemoryScan");
+        if (r is not null) results.Add(r);
+        return results;
     }
 
     private DetectionResult? Decide(ThreatProfile p, string trigger)
@@ -229,13 +254,19 @@ public sealed class DetectionEngine
             if (trusted)
             {
                 p.Trusted = true;
-                p.Score = Math.Max(0, p.Score - _trustDiscount);
                 p.Reasons.Add($"[-{_trustDiscount}] Signed by allowlisted publisher");
             }
         }
 
-        Verdict v = p.Score >= _quarantine ? Verdict.Quarantine
-                  : p.Score >= _warn ? Verdict.Warn
+        // The trust discount is a PERSISTENT offset applied at verdict time, not a
+        // one-shot subtraction from Score. Subtracting once (at the first Decide) burned
+        // the whole cushion on a process whose first signal scored 0 (the normal
+        // ProcessStart-first case), leaving all later scoring undiscounted -> a trusted
+        // app could be quarantined. Evaluating an effective score each time fixes that.
+        int eff = p.Trusted ? Math.Max(0, p.Score - _trustDiscount) : p.Score;
+
+        Verdict v = eff >= _quarantine ? Verdict.Quarantine
+                  : eff >= _warn ? Verdict.Warn
                   : Verdict.Allow;
 
         if (v == Verdict.Allow) return null;
