@@ -12,12 +12,19 @@
     <RootNamespace>ProcessShield.Gui</RootNamespace>
     <!-- Requests administrator rights at launch (UAC), needed for ETW + process access. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon></ApplicationIcon>
+    <ApplicationIcon>Assets\shield.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- Reuse the whole detection/response/telemetry/config core from the console app. -->
     <ProjectReference Include="..\..\ProcessShield.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Brand assets (shield + matrix), embedded so the window icon and sidebar logo
+         resolve via pack:// URIs. -->
+    <Resource Include="Assets\shield.ico" />
+    <Resource Include="Assets\shield_256.png" />
   </ItemGroup>
 
   <ItemGroup>

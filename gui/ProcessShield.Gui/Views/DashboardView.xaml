@@ -203,8 +203,7 @@
                 <Grid>
                     <!-- Empty state -->
                     <TextBlock VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"
-                               Text="Select a process to review why it was flagged and take action."
-                               Foreground="{StaticResource Brush.Faint}" Style="{StaticResource Text.Body}">
+                               Text="Select a process to review why it was flagged and take action.">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock" BasedOn="{StaticResource Text.Body}">
                                 <Setter Property="Foreground" Value="{StaticResource Brush.Faint}"/>
@@ -218,7 +217,10 @@
                     </TextBlock>
 
                     <!-- Detail -->
-                    <DockPanel Visibility="{Binding HasSelection, Converter={StaticResource BoolToVis}}"
+                    <!-- DataContext is the selected row, so Visibility must bind HasSelection
+                         against the MainViewModel explicitly (via the UserControl), or it would
+                         resolve against the row (no such property) and the panel never hides. -->
+                    <DockPanel Visibility="{Binding DataContext.HasSelection, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}"
                                DataContext="{Binding SelectedThreat}">
                         <StackPanel DockPanel.Dock="Top">
                             <TextBlock Text="{Binding Name}" Style="{StaticResource Text.Title}" TextTrimming="CharacterEllipsis"/>

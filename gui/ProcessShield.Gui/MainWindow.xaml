@@ -4,6 +4,7 @@
         xmlns:v="clr-namespace:ProcessShield.Gui.Views"
         Title="ProcessShield" Height="760" Width="1180"
         MinHeight="560" MinWidth="960"
+        Icon="pack://application:,,,/Assets/shield.ico"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource Brush.Ink}"
         FontFamily="{StaticResource Font.Ui}"

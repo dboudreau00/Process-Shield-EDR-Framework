@@ -244,11 +244,41 @@
                         <Border Grid.Column="0" Background="{StaticResource Brush.InkRaised}"
                                 BorderBrush="{StaticResource Brush.Line}" BorderThickness="0,0,1,0">
                             <DockPanel>
-                                <StackPanel DockPanel.Dock="Top" Margin="20,22,20,18">
-                                    <TextBlock Text="ProcessShield" Style="{StaticResource Text.Title}"/>
-                                    <TextBlock Text="ENDPOINT SENTINEL" Style="{StaticResource Text.Label}" Margin="0,3,0,0"/>
+                                <!-- Brand: shield mark + wordmark -->
+                                <Grid DockPanel.Dock="Top" Margin="18,22,18,16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Image Grid.Column="0" Width="38" Height="38" VerticalAlignment="Center"
+                                           Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality"
+                                           Source="pack://application:,,,/Assets/shield_256.png"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="ProcessShield" Style="{StaticResource Text.Title}"/>
+                                        <TextBlock Text="ENDPOINT SENTINEL" Style="{StaticResource Text.Label}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- Accent divider under the brand -->
+                                <Border DockPanel.Dock="Top" Height="1" Margin="18,0,18,8"
+                                        Background="{StaticResource Brush.LineSoft}"/>
+
+                                <!-- Footer: honest beta pill + version, pinned to the bottom -->
+                                <StackPanel DockPanel.Dock="Bottom" Margin="18,0,18,18">
+                                    <Border Background="#1A2A2E" BorderBrush="{StaticResource Brush.AccentDim}"
+                                            BorderThickness="1" CornerRadius="6" Padding="10,7" HorizontalAlignment="Left">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Border Width="7" Height="7" CornerRadius="3.5" VerticalAlignment="Center"
+                                                    Margin="0,0,8,0" Background="{StaticResource Brush.Accent}"/>
+                                            <TextBlock Text="UNAUDITED BETA" Style="{StaticResource Text.Label}"
+                                                       Foreground="{StaticResource Brush.Accent}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <TextBlock Text="v1.0 · lab &amp; research use" Style="{StaticResource Text.Label}"
+                                               Foreground="{StaticResource Brush.Faint}" Margin="2,8,0,0"/>
                                 </StackPanel>
-                                <StackPanel IsItemsHost="True" Margin="0,6,0,0"/>
+
+                                <StackPanel IsItemsHost="True" Margin="0,4,0,0"/>
                             </DockPanel>
                         </Border>
                         <ContentPresenter Grid.Column="1" ContentSource="SelectedContent"/>
